@@ -1,0 +1,111 @@
+---
+title: "Example"
+data: today
+author: "Your name"
+---
+
+```{python}
+#| echo: false
+# make global parameters available to embed in text
+import sys
+sys.path.append('..')
+from global_params import load_params
+params = load_params('../global_params.yml')
+```
+
+## Admixture displacement in each <br>**geographical region** {.smaller}
+
+### This is a subtitle
+
+Here we have some text that may run over several lines of the slide frame,
+depending on how long it is.
+
+- first item 
+    - A sub item
+
+Next, we'll brief review some theme-specific components.
+
+- Note that _all_ of the standard Reveal.js
+[features](https://quarto.org/docs/presentations/revealjs/)
+can be used with this theme, even if we don't highlight them here.
+
+## Additional theme classes
+
+### Some extra things you can do with the clean theme
+
+Special classes for emphasis
+
+- `.alert` class for default emphasis, e.g. [important note]{.alert}.
+- `.fg` class for custom colour, e.g. [important note]{.fg style="--col: #e64173"}.
+- `.bg` class for custom background, e.g. [important note]{.bg style="--col: #e64173"}.
+
+Cross-references
+
+- `.button` class provides a Beamer-like button, e.g.
+[[Summary]{.button}](#sec-summary)
+
+
+## Social norms
+
+### Sampling
+
+We used a sample size of `{python} params.sample_size`.
+
+In Denmark, the workplace interaction is very informal and largely unaffected by seniority and age. 
+
+{{< embed ../notebooks/example.ipynb#doc-sampling echo=false >}}
+
+## Social norms
+
+### Neither academic seniority or age affected interaction
+
+{{< embed ../notebooks/example.ipynb#fig-danish-interaction-regressions >}}
+
+<!-- a bug in quarto does not allow successive embeds witout somthing in between (like this) -->
+
+{{< embed ../notebooks/example.ipynb#doc-formality-correlation echo=false >}}
+
+## Slide title
+
+::: {.incremental}
+- Eat spaghetti
+- Drink wine
+:::
+
+## Slide title
+
+:::: {.columns}
+
+::: {.column width="40%"}
+Left column
+:::
+
+::: {.column width="60%"}
+- One
+- Two
+- Three
+:::
+
+::::
+
+## Admixture displacement in each <br>**geographical region** {.smaller}
+
+:::: {.columns}
+
+::: {.column width="40%"}
+{{< embed ../notebooks/example.ipynb#doc-formality-correlation echo=false >}}
+:::
+
+::: {.column width="60%"}
+{{< embed ../notebooks/example.ipynb#fig-danish-interaction-regressions >}}
+:::
+
+::::
+
+## Slide Title
+
+Slide content
+
+::: aside
+Schumer et al. (2018)
+:::

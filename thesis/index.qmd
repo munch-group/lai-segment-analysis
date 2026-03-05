@@ -1,0 +1,179 @@
+---
+title: Title of my thesis
+subtitle: Some subtitle for my thesis
+authors:
+  - name: Your Name
+    affiliation: Aarhus University
+    roles: analysis, writing
+    corresponding: true
+  # - name: Kasper Munch
+  #   affiliation: Aarhus University
+  #   roles: Supervision
+  #   corresponding: false
+# keywords:
+#   - Vestibulum
+#   - Nunc ac dignissim 
+#   - Proin feugiat 
+# abstract: > 
+#   Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+plain-language-summary: |
+  In plain language, the thesis describes an analysis of something. Somethings was not previously know. I found something and was able to conclude something. The perspectives of this result is something.
+key-points:
+  - Proin tempor lorem arcu, at condimentum purus volutpat eu. 
+  - Mauris cursus laoreet ex, ignissim bibendum est posuere iaculis.
+  - Nam vel neque eu arcu blandit fringilla et in quam.
+date: last-modified
+date-format: long
+degree: Master of Science in Bioinformatics
+---
+
+<!-- Italics are "grayed out" to make the example use stand out from dummy content. To make them black, just remove the last line in header_extra.tex: "\renewcommand\emph[1]{\oldemph{\color{gray}#1}}" -->
+
+# Abstract
+
+*Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.*
+
+# Introduction
+
+*Fringilla sem fusce vivamus pellentesque in commodo penatibus bibendum. Vestibulum aptent volutpat vehicula eu rutrum lobortis consequat. Euismod lectus ultrices; duis duis ipsum rhoncus. Ipsum vitae primis potenti suscipit per nascetur rutrum lobortis. Scelerisque pulvinar duis interdum sapien elementum consequat vitae orci. Suspendisse tempor nisl accumsan dolor potenti euismod sed.*
+
+### Subsection (with references)
+
+Skov et al. reported strong selection on the human X chromosome [-@Skov2023]. *Pellentesque id tellus at erat luctus fringilla. Suspendisse potenti. In fringilla gravida ornare. Aenean id lectus pulvinar, sagittis felis nec, rutrum risus. Nam vel neque eu arcu blandit fringilla et in quam. Aliquam luctus est sit amet vestibulum eleifend.* Lineages in small population have smaller coalescence times, [see @NielsenSlatkin2016, chap. 1]. *Nunc ac dignissim magna. Vestibulum vitae egestas elit. Proin feugiat leo quis ante condimentum, eu ornare mauris feugiat. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Mauris cursus laoreet ex, ignissim bibendum est posuere iaculis. Suspendisse et maximus elit.* The neanderthal genome has been sequenced [@Prufer2012]. *Nunc ac dignissim magna. Vestibulum vitae egestas elit. Proin feugiat leo quis ante condimentum, eu ornare mauris feugiat.* The X chromosome is subject to recurrent sweeps [@Nam2015; @Dutheil2015]. *Fusce et  ellentesque ligula. Pellentesque id tellus at erat luctus fringilla. Suspendisse potenti. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas.* Following @Munch2014, *dignissim magna. Vestibulum vitae egestas elit. Proin feugiat leo quis ante condimentum, eu ornare mauris feugiat. 
+
+### Subsubsection (with illustrations)
+
+*In fringilla gravida ornare. Aenean id lectus pulvinar, sagittis felis nec, rutrum risus. Nam vel neque eu arcu blandit fringilla et in quam. Aliquam luctus est sit amet vestibulum eleifend.* You can see an elephant in @fig-elephant. *Phasellus elementum sagittis molestie. Proin tempor lorem arcu, at condimentum purus volutpat eu. Fusce et  ellentesque ligula. Pellentesque id tellus at erat luctus fringilla. Suspendisse potenti.* 
+
+::: {#fig-elephant }
+
+![](illustrations/elephant.png){width="50%"}
+
+Some caption for an illustration showing an elephant
+:::
+
+*Integer vulputate habitant quis vitae tristique.Aenean id lectus pulvinar, sagittis felis nec, rutrum risus. Nam vel neque eu arcu blandit fringilla et in quam. Aliquam luctus est sit amet vestibulum eleifend. Phasellus elementum sagittis molestie. Proin tempor lorem arcu, at condimentum purus volutpat eu. Fusce et  ellentesque ligula.* There are two elephants in @fig-twoelephants. *Pellentesque id tellus at erat luctus fringilla. Suspendisse potenti.* You can see an elephant in @fig-elephant. 
+
+::: {#fig-twoelephants layout-ncol=2}
+
+![Left elephant](illustrations/elephant.png){#fig-surus}
+
+![Right elephant](illustrations/elephant.png){#fig-hanno}
+
+Some caption for an illustration with two elephants.
+:::
+
+# Methods
+
+*Nam senectus ultricies class nulla primis mattis. Primis feugiat nunc nec in a bibendum elit; vestibulum molestie. Luctus vehicula euismod fermentum semper facilisis. Integer vulputate habitant quis vitae tristique. Fringilla sem fusce vivamus pellentesque in commodo penatibus bibendum. Vestibulum aptent volutpat vehicula eu rutrum lobortis consequat. Scelerisque pulvinar duis interdum sapien elementum consequat vitae orci. Suspendisse tempor nisl accumsan dolor potenti euismod sed.*
+
+## Subsection (with text from notebook)
+
+{{< embed ../notebooks/example.ipynb#doc-sampling echo=false >}}
+
+*Euismod lectus ultrices; duis duis ipsum rhoncus. Ipsum vitae primis potenti suscipit per nascetur rutrum lobortis. Suspendisse et maximus elit. In fringilla gravida ornare. Aenean id lectus pulvinar, sagittis felis nec, rutrum risus. Nam vel neque eu arcu blandit fringilla et in quam. Aliquam luctus est sit amet vestibulum eleifend. Phasellus elementum sagittis molestie. Proin tempor lorem arcu, at condimentum purus volutpat eu.*
+
+
+## Subsection (with inline table)
+
+The table below does not have analysis data but is used to tabulate something that could also be said with prose (@tbl-inline). *Proin feugiat leo quis ante condimentum, eu ornare mauris feugiatque eu arcu blandit fringilla et in quam.*
+
+
+::: {#tbl-inline .striped}
+
+| Type    | Description |
+|:--------|:------------------------------------------------------------------------------------------|
+| tRNA    | A type of RNA that blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah  |
+| mRNA    | A type of RNA that blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah |
+| piRNA   | A type of RNA that blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah |
+| snoRNA  | A type of RNA that blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah, blah |
+
+Four categories of RNA with some summary info.
+:::
+
+## Subsection (with math)
+
+*Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum. In fringilla gravida ornare. Aenean id lectus pulvinar, sagittis felis nec, rutrum risus. Nam vel neque eu arcu blandit fringilla et in quam.* This is calculated as $\pi_k = \prod_{i=1}^K x_i$. *Phasellus elementum sagittis molestie. Proin tempor lorem arcu, at condimentum purus volutpat eu. Fusce et  ellentesque ligula. Pellentesque id tellus at erat luctus fringilla. Suspendisse potenti* as shown in (@eq-stat).
+
+$$
+\lambda = \sum_{k=1}^N \pi_k
+$$ {#eq-stat}
+
+As shown in @eq-lineq, *ac dignissim magna. Vestibulum vitae egestas elit. Proin feugiat leo quis ante condimentum, eu ornare mauris feugiat. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Mauris cursus laoreet ex, ignissim bibendum est posuere iaculis. Suspendisse et maximus elit.*
+
+$$
+y \sim \beta_1 x + \beta_2
+$$ {#eq-lineq}
+
+## Subsection (with code)
+
+```{python}
+# this code is executed but not shown in the output
+x = 5
+```
+
+*Pulvinar tempus nascetur sollicitudin fringilla sodales.* The value of `x` is `{python} x`. *Sapien ullamcorper pretium tellus ultricies sodales aliquet. Proin eros iaculis fames mus cubilia praesent cubilia. Nulla quam montes sed varius nullam non. Mi turpis sagittis ornare condimentum consectetur.* In Python, we can define a variable like this:
+
+```python
+y = 4
+```
+
+## Subsection (bold and italics)
+
+**This is bold**, __so is this__. *This is italics*, _so is this_. __*This is both*__, **_so is this_**. *Pulvinar tempus nascetur sollicitudin fringilla sodales. Urna lorem nisi volutpat; lobortis dapibus auctor mollis. Suscipit conubia neque cras curae vitae curabitur facilisi inceptos ante.  Vehicula volutpat nulla nostra inceptos parturient dui purus ipsum ante.*
+
+### Subsubsection
+
+*Pulvinar tempus nascetur sollicitudin fringilla sodales. Urna lorem nisi volutpat; lobortis dapibus auctor mollis. Suscipit conubia neque cras curae vitae curabitur facilisi inceptos ante. Phasellus augue inceptos nulla; amet id egestas ad. Enim ad eget nullam fames blandit neque varius mi. Velit pretium est conubia montes gravida. Vehicula volutpat nulla nostra inceptos parturient dui purus ipsum ante.*
+
+#### Subsubsubsection
+
+*Pulvinar tempus nascetur sollicitudin fringilla sodales. Urna lorem nisi volutpat; lobortis dapibus auctor mollis. Suscipit conubia neque cras curae vitae curabitur facilisi inceptos ante. Phasellus augue inceptos nulla; amet id egestas ad. Enim ad eget nullam fames blandit neque varius mi. Velit pretium est conubia montes gravida. Vehicula volutpat nulla nostra inceptos parturient dui purus ipsum ante.*
+
+
+# Results
+
+*Sapien ullamcorper pretium tellus ultricies sodales aliquet. Proin eros iaculis fames mus cubilia praesent cubilia. Nulla quam montes sed varius nullam non. Mi turpis sagittis ornare condimentum consectetur. Aenean orci sagittis nibh venenatis natoque bibendum semper vel. Interdum per velit lacus ridiculus augue convallis mollis. Faucibus eget eros aptent; fusce magnis lacinia duis. Justo ad fames laoreet nisl viverra.*
+
+## Section (with embedded figures from notebooks)
+
+*Pretium id vestibulum tristique ornare cras. Litora odio mus nullam molestie himenaeos neque lacus bibendum penatibus. Velit porttitor eget massa hac massa feugiat netus ac. Sodales scelerisque imperdiet curae luctus iaculis est vehicula elementum.* (@fig-danish-interaction-regressions).
+
+{{< embed ../notebooks/example.ipynb#fig-danish-interaction-regressions >}}
+
+As shown in @fig-danish-interaction, *feugiat leo quis ante condimentum, eu ornare mauris feugiat. Pellentesque habitant morbi tristique senectus et netus et malesuada fames ac turpis egestas. Mauris cursus laoreet ex, ignissim bibendum est posuere iaculis. Suspendisse et maximus elit. In fringilla gravida ornare. Aenean id lectus pulvinar, sagittis felis nec, rutrum risus. Nam vel neque eu arcu blandit fringilla et in quam. Aliquam luctus est sit amet vestibulum eleifend.*
+
+{{< embed ../notebooks/example.ipynb#fig-danish-interaction echo=false >}}
+
+## Section (with table embedded from notebook)
+
+*Cubilia hendrerit ipsum suspendisse curae curae suspendisse scelerisque semper luctus. Erat turpis dictum bibendum taciti pharetra. Nisi sed vestibulum felis duis; dapibus id. Justo semper felis potenti commodo class. Mauris venenatis purus integer urna cras faucibus. Eu consequat varius massa porttitor nisi. Est fringilla sed senectus ante fames ipsum aenean porta neque,* @tbl-mean-informality lists the mean interaction scores by seniority and nationality.
+
+{{< embed ../notebooks/example.ipynb#tbl-mean-informality echo=false >}}
+
+*Ligula molestie convallis magnis elit tellus volutpat. Hac id in libero nibh inceptos. Malesuada blandit porttitor ad; netus integer tortor. Quis venenatis lorem sit ex hendrerit porta in. Purus praesent felis eget class luctus condimentum finibus quis tincidunt. Nam lectus malesuada primis dapibus consectetur. Quam placerat nam ullamcorper fusce conubia fermentum himenaeos gravida nostra.*
+
+# Discussion
+
+*Sociosqu iaculis molestie consectetur; pulvinar imperdiet pellentesque sollicitudin erat. Varius mattis neque blandit sodales mauris vestibulum. Iaculis sodales euismod neque risus nostra magna fermentum eleifend. Tempus consequat montes nec quisque urna quam non montes. Accumsan ligula mauris nullam nascetur maximus sodales. Non tellus vel aliquam aenean nulla turpis curabitur potenti. Eleifend luctus mi primis elementum, rhoncus quisque. Aenean semper blandit cursus sapien; eget sem. Posuere ultricies torquent tellus ridiculus enim placerat malesuada tempus.*
+
+*Sapien ullamcorper pretium tellus ultricies sodales aliquet. Proin eros iaculis fames mus cubilia praesent cubilia. Nulla quam montes sed varius nullam non. Mi turpis sagittis ornare condimentum consectetur. Aenean orci sagittis nibh venenatis natoque bibendum semper vel. Interdum per velit lacus ridiculus augue convallis mollis. Faucibus eget eros aptent; fusce magnis lacinia duis. Justo ad fames laoreet nisl viverra.*
+
+# Conclusion
+
+*Laoreet ullamcorper urna et amet nunc faucibus finibus. Eget consequat sed integer bibendum a mollis nisl luctus. Orci leo quisque inceptos imperdiet proin. Pellentesque commodo parturient maecenas eu leo malesuada ullamcorper nulla viverra. Arcu ligula imperdiet quisque finibus in curae et accumsan. Egestas gravida sollicitudin venenatis pellentesque litora leo.*
+
+*Cras velit donec in a morbi ligula, ultrices at tempor. Auctor lectus in aptent suscipit congue. Urna dui metus risus eleifend odio nisl magna. Nascetur fringilla metus proin vitae in diam. Class tincidunt lorem et dictum quisque arcu euismod. Adipiscing dui interdum aptent fusce pretium pretium. Efficitur imperdiet sem dictumst ultrices id rhoncus. Congue lacus efficitur scelerisque nibh vestibulum.*
+
+
+# Bon mot
+
+> Nothing in Biology Makes Sense except in the Light of Evolution
+>
+> \- Theodosius Dobzhansky
+
+
+# References
+
+::: {#refs}
+:::

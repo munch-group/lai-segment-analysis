@@ -1,0 +1,63 @@
+project:
+  type: book
+  post-render: 
+    # - quarto render --profile slides
+    - quarto render slides/
+    - quarto render thesis/
+    - quarto render manuscript/
+    
+execute:
+  freeze: auto
+  echo: true
+      
+format:
+  html:
+    theme: 
+      - default
+      - custom.scss
+    toc-depth: 2
+    notebook-links: true
+    number-sections: false  
+    reference-location: margin
+    mermaid:
+      theme: neutral
+
+comments:
+  hypothesis: true
+
+lightbox: true
+
+book:
+  repo-url: "https://github.com/munch-group/munch-group-project"
+  repo-actions: [edit, issue, source]  
+  title: "munch-group-project"
+  author: "Joanna Doh"  
+  sidebar:
+    collapse-level: 1
+    search: true  
+  chapters:
+    - index.qmd
+    - part: "Thesis"
+      chapters:
+      # (the same files must be listed _quarto-slides.yml to render as slides)
+      - thesis/index.qmd 
+    - part: "Slides"
+      chapters:
+      # (the same files must be listed _quarto-slides.yml to render as slides)
+      - slides/index.qmd 
+    - part: "Notebooks"
+      chapters: 
+      - notebooks/example.ipynb
+    - part: "Workflows"
+      chapters: 
+      - workflow.py
+    # - part: "Reports"
+    #   chapters: 
+    #   - reports/example.qmd
+    # - part: "Tables"
+    #   chapters: 
+    #   - tables/example.ipynb
+  downloads: [pdf]
+     
+bibliography: references.bib
+

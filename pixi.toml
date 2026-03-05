@@ -1,0 +1,44 @@
+[workspace]
+authors = ["Your name <your@email.com>"]
+channels = ["conda-forge", "munch-group"]
+name = "munch-group-project"
+platforms = ["linux-64", "osx-arm64"]
+version = "0.1.0"
+
+[dependencies]
+git = "*"
+gh = "*"
+pip = "*"
+git-lfs = "*"
+nodejs = "*"
+seaborn = "*"
+pytables = "*"
+scipy = "*"
+statsmodels = "*"
+ipykernel = "*"
+jupyter = "*"
+nbconvert = "*"
+vscodenb = "*"
+r-rsvg = "*"
+geneinfo = ">=5.6.5,<6"
+quarto = ">=1.7.33,<2"
+
+
+[tasks.init]
+cmd = "python ./scripts/rename.py && git remote set-url \"origin\" git@github.com:munch-group/$(basename $(git rev-parse --show-toplevel))"
+
+[tasks.docs]
+cmd = "./scripts/docs-run-notebooks.sh && git add -u notebooks"
+description = "Run documentation notebooks"
+
+[tasks.clean]
+cmd = "git clean -id"
+description = "Removes untracked files and directories but respects your .gitignores"
+
+[tasks.commit]
+depends-on = ["docs"]
+cmd = "./scripts/git-commit.sh"
+description = "Commits with message made by Claude"
+
+
+
