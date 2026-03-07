@@ -13,36 +13,29 @@ from scipy.interpolate import interp1d
 
 # ── Single-segment p-value ───────────────────────────────────────────────────
 
-def segment_pvalue(genetic_length, rate):
+def segment_pvalue(genetic_length_left, genetic_length_right, rate):
     """
-    Gamma(2) survival function for a segment observed at a fixed position.
+    Exponential survival p-values for left and right halves of a segment
+    observed at a fixed position.
 
-    Under the null, breakpoints are Poisson in genetic distance with rate λ.
-    The segment covering a fixed point is length-biased: its length follows
-    Gamma(2, 1/λ), giving survival function (1 + λg) exp(-λg).
-
-    Parameters
-    ----------
-    genetic_length : array_like
-        Segment length in Morgans.
-    rate : float
-        Rate parameter λ (e.g. f·t for the standard admixture model).
+    Under the null, breakpoints are Poisson with rate λ. At a fixed
+    position x inside a segment, the distances to the left and right
+    breakpoints are independent Exp(λ).
 
     Returns
     -------
-    ndarray
-        P-values, same shape as genetic_length.
+    p_left, p_right : float or ndarray
     """
-    g = np.asarray(genetic_length, dtype=float)
-    lg = rate * g
-    return (1 + lg) * np.exp(-lg)
+    g_l = np.asarray(genetic_length_left, dtype=float)
+    g_r = np.asarray(genetic_length_right, dtype=float)
+    return np.exp(-rate * g_l), np.exp(-rate * g_r)
 
 
 # ── P-value matrix ───────────────────────────────────────────────────────────
 
 def build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate):
     """
-    Compute per-position, per-chromosome p-values for each ancestry label.
+    Compute per-position, per-chromosome split p-values for each ancestry label.
 
     Parameters
     ----------
@@ -57,90 +50,126 @@ def build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate):
 
     Returns
     -------
-    dict[str, ndarray]
-        Mapping ancestry label -> (n_positions, n_chromosomes) array of
-        p-values (NaN where the ancestry is absent).
+    dict[str, dict] with keys per ancestry label, each containing:
+        'p_left':  ndarray (n_pos, n_chrom) — left-half p-values
+        'p_right': ndarray (n_pos, n_chrom) — right-half p-values
+        'bp_left': ndarray (n_pos, n_chrom) — left breakpoint position (for k_eff)
+        'bp_right': ndarray (n_pos, n_chrom) — right breakpoint position (for k_eff)
+    NaN where ancestry is absent.
     """
     eval_positions = np.asarray(eval_positions, dtype=float)
     n_pos = len(eval_positions)
     n_chrom = len(segments)
     labels = sorted(ancestry_rate.keys())
 
-    pval_matrix = {a: np.full((n_pos, n_chrom), np.nan) for a in labels}
+    pval_matrix = {
+        a: {
+            'p_left':  np.full((n_pos, n_chrom), np.nan),
+            'p_right': np.full((n_pos, n_chrom), np.nan),
+            'bp_left': np.full((n_pos, n_chrom), np.nan),
+            'bp_right': np.full((n_pos, n_chrom), np.nan),
+        }
+        for a in labels
+    }
 
     for ci, ch in enumerate(segments):
         for (start, end, anc) in ch:
             if anc not in ancestry_rate:
                 continue
             lam = ancestry_rate[anc]
-            g = float(phys_to_gen(end) - phys_to_gen(start))
-            p = segment_pvalue(g, lam)
             mask = (eval_positions >= start) & (eval_positions < end)
-            pval_matrix[anc][mask, ci] = p
+            positions = eval_positions[mask]
+            g_start = float(phys_to_gen(start))
+            g_end = float(phys_to_gen(end))
+            g_positions = np.asarray(phys_to_gen(positions), dtype=float)
+            g_l = g_positions - g_start
+            g_r = g_end - g_positions
+            p_l, p_r = segment_pvalue(g_l, g_r, lam)
+            pval_matrix[anc]['p_left'][mask, ci] = p_l
+            pval_matrix[anc]['p_right'][mask, ci] = p_r
+            pval_matrix[anc]['bp_left'][mask, ci] = start
+            pval_matrix[anc]['bp_right'][mask, ci] = end
 
     return pval_matrix
 
 
 # ── Combining p-values across chromosomes ────────────────────────────────────
 
-def min_p(pval_matrix):
+def min_p(pval_dict):
     """
     Min-p across chromosomes with Beta(1,k) correction.
 
-    Uses effective sample size k_eff = number of unique p-values at each
-    position, so that chromosomes sharing the same segment (identical
-    breakpoints) count only once.
+    Uses effective sample size k_eff = number of unique segments (by
+    breakpoint pair) at each position.
 
     Parameters
     ----------
-    pval_matrix : ndarray, shape (n_pos, n_chrom)
-        Per-chromosome p-values (NaN where absent).
+    pval_dict : dict with 'p_left', 'p_right', 'bp_left', 'bp_right' arrays.
 
     Returns
     -------
     ndarray, shape (n_pos,)
         Corrected p-values (NaN where no chromosome has the ancestry).
     """
-    n_pos = pval_matrix.shape[0]
+    p_product = pval_dict['p_left'] * pval_dict['p_right']
+    # Product of two independent Uniform[0,1] has CDF F(t) = t·(1 - ln t).
+    # Apply F to convert back to Uniform[0,1] before Beta(1,k) correction.
+    eps = 1e-300
+    p_uniform = p_product * (1.0 - np.log(np.maximum(p_product, eps)))
+    n_pos = p_uniform.shape[0]
     result = np.full(n_pos, np.nan)
     for xi in range(n_pos):
-        row = pval_matrix[xi, :]
-        valid = row[~np.isnan(row)]
+        row = p_uniform[xi, :]
+        mask = ~np.isnan(row)
+        valid = row[mask]
         if len(valid) > 0:
-            k = len(np.unique(valid))
+            pairs = np.column_stack([pval_dict['bp_left'][xi, mask],
+                                     pval_dict['bp_right'][xi, mask]])
+            k = len(np.unique(pairs, axis=0))
             result[xi] = 1.0 - (1.0 - np.min(valid))**k
     return result
 
 
-def fisher_combined(pval_matrix):
+def fisher_combined(pval_dict):
     """
-    Fisher combined test across chromosomes.
+    Fisher combined test using per-side effective sample sizes.
 
-    Computes -2 sum(ln p_c) ~ chi2(2k) where k is the effective number of
-    independent samples (unique p-values) at each position. Duplicate
-    p-values from shared segments are deduplicated before computing the
-    test statistic.
+    Left and right half-segment p-values are combined separately using
+    unique breakpoints to determine k_eff for each side:
+        stat = -2·(Σ_unique_left ln(p_L) + Σ_unique_right ln(p_R))
+        df = 2·k_eff_L + 2·k_eff_R
 
     Parameters
     ----------
-    pval_matrix : ndarray, shape (n_pos, n_chrom)
+    pval_dict : dict with 'p_left', 'p_right', 'bp_left', 'bp_right' arrays.
 
     Returns
     -------
     ndarray, shape (n_pos,)
     """
     eps = 1e-300
-    n_pos = pval_matrix.shape[0]
+    n_pos = pval_dict['p_left'].shape[0]
     result = np.full(n_pos, np.nan)
     for xi in range(n_pos):
-        row = pval_matrix[xi, :]
-        valid = row[~np.isnan(row)]
-        if len(valid) == 0:
+        pl = pval_dict['p_left'][xi, :]
+        pr = pval_dict['p_right'][xi, :]
+        bp_l = pval_dict['bp_left'][xi, :]
+        bp_r = pval_dict['bp_right'][xi, :]
+        mask = ~np.isnan(pl)
+        if not np.any(mask):
             continue
-        unique_p = np.unique(valid)
-        k = len(unique_p)
-        stat = -2 * np.sum(np.log(np.maximum(unique_p, eps)))
-        result[xi] = chi2.sf(stat, df=2 * k)
+        # Unique left breakpoints → unique left p-values
+        _, idx_l = np.unique(bp_l[mask], return_index=True)
+        unique_pl = pl[mask][idx_l]
+        k_l = len(unique_pl)
+        stat_l = -2 * np.sum(np.log(np.maximum(unique_pl, eps)))
+        # Unique right breakpoints → unique right p-values
+        _, idx_r = np.unique(bp_r[mask], return_index=True)
+        unique_pr = pr[mask][idx_r]
+        k_r = len(unique_pr)
+        stat_r = -2 * np.sum(np.log(np.maximum(unique_pr, eps)))
+
+        result[xi] = chi2.sf(stat_l + stat_r, df=2 * k_l + 2 * k_r)
     return result
 
 
