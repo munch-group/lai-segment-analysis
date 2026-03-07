@@ -26,7 +26,7 @@ def segment_pvalue(genetic_length, rate):
     genetic_length : array_like
         Segment length in Morgans.
     rate : float
-        Rate parameter λ (e.g. (1-f)·t for the standard admixture model).
+        Rate parameter λ (e.g. f·t for the standard admixture model).
 
     Returns
     -------
@@ -87,6 +87,10 @@ def min_p(pval_matrix):
     """
     Min-p across chromosomes with Beta(1,k) correction.
 
+    Uses effective sample size k_eff = number of unique p-values at each
+    position, so that chromosomes sharing the same segment (identical
+    breakpoints) count only once.
+
     Parameters
     ----------
     pval_matrix : ndarray, shape (n_pos, n_chrom)
@@ -103,7 +107,7 @@ def min_p(pval_matrix):
         row = pval_matrix[xi, :]
         valid = row[~np.isnan(row)]
         if len(valid) > 0:
-            k = len(valid)
+            k = len(np.unique(valid))
             result[xi] = 1.0 - (1.0 - np.min(valid))**k
     return result
 
@@ -112,8 +116,10 @@ def fisher_combined(pval_matrix):
     """
     Fisher combined test across chromosomes.
 
-    Computes -2 sum(ln p_c) ~ chi2(2k) where k is the number of non-NaN
-    chromosomes at each position.
+    Computes -2 sum(ln p_c) ~ chi2(2k) where k is the effective number of
+    independent samples (unique p-values) at each position. Duplicate
+    p-values from shared segments are deduplicated before computing the
+    test statistic.
 
     Parameters
     ----------
@@ -124,10 +130,18 @@ def fisher_combined(pval_matrix):
     ndarray, shape (n_pos,)
     """
     eps = 1e-300
-    lp = -2 * np.log(np.maximum(pval_matrix, eps))
-    n_chrom = np.sum(~np.isnan(pval_matrix), axis=1)
-    stat = np.nansum(lp, axis=1)
-    return np.where(n_chrom > 0, chi2.sf(stat, df=2 * n_chrom), np.nan)
+    n_pos = pval_matrix.shape[0]
+    result = np.full(n_pos, np.nan)
+    for xi in range(n_pos):
+        row = pval_matrix[xi, :]
+        valid = row[~np.isnan(row)]
+        if len(valid) == 0:
+            continue
+        unique_p = np.unique(valid)
+        k = len(unique_p)
+        stat = -2 * np.sum(np.log(np.maximum(unique_p, eps)))
+        result[xi] = chi2.sf(stat, df=2 * k)
+    return result
 
 
 def fisher_joint(pvals_a, pvals_b):
