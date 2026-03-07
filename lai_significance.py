@@ -7,6 +7,7 @@ chromosomes, and multiple testing.
 """
 
 import numpy as np
+import pandas as pd
 from scipy.stats import chi2
 from scipy.interpolate import interp1d
 
@@ -29,6 +30,201 @@ def segment_pvalue(genetic_length_left, genetic_length_right, rate):
     g_l = np.asarray(genetic_length_left, dtype=float)
     g_r = np.asarray(genetic_length_right, dtype=float)
     return np.exp(-rate * g_l), np.exp(-rate * g_r)
+
+
+# ── Gap detection ───────────────────────────────────────────────────────────
+
+def _is_gap(anc):
+    """True if ancestry represents missing data (gap)."""
+    if anc is None or anc is False or anc == '':
+        return True
+    try:
+        if isinstance(anc, float) and np.isnan(anc):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def _fill_implicit_gaps(segs):
+    """Insert explicit gap segments for coordinate discontinuities and merge consecutive gaps."""
+    if not segs:
+        return segs
+    # Step 1: fill coordinate discontinuities with explicit gaps
+    filled = [segs[0]]
+    for i in range(1, len(segs)):
+        prev_end = segs[i - 1][1]
+        curr_start = segs[i][0]
+        if curr_start > prev_end:
+            filled.append((prev_end, curr_start, None))
+        filled.append(segs[i])
+    # Step 2: merge consecutive gap segments
+    merged = [filled[0]]
+    for i in range(1, len(filled)):
+        s, e, a = filled[i]
+        ms, me, ma = merged[-1]
+        if _is_gap(a) and _is_gap(ma):
+            merged[-1] = (ms, e, None)
+        else:
+            merged.append((s, e, a))
+    return merged
+
+
+def _build_side_context(segs, seg_idx, direction, anc, phys_to_gen, max_chain_depth=1000):
+    """
+    Walk from segment seg_idx in the given direction, building the gap context.
+
+    Returns None if the boundary is a true breakpoint (adjacent different
+    ancestry or chromosome edge with no gap).
+
+    Returns (gap_delta, chain) for gap boundaries, where:
+        gap_delta : float — genetic width of the first gap
+        chain : list of (segment_width, gap_width_or_None)
+            Each entry is a same-ancestry segment beyond a gap.
+            The last entry has gap_width=None (terminal).
+    """
+    step = -1 if direction == 'left' else 1
+    neighbor_idx = seg_idx + step
+
+    # Chromosome boundary — true breakpoint
+    if neighbor_idx < 0 or neighbor_idx >= len(segs):
+        return None
+
+    neighbor = segs[neighbor_idx]
+    n_start, n_end, n_anc = neighbor
+
+    # Adjacent known different ancestry — true breakpoint
+    if not _is_gap(n_anc):  # n_anc is a known ancestry
+        if n_anc != anc:
+            return None
+        # Adjacent same ancestry (shouldn't happen in well-formed data,
+        # but treat boundary as internal — not a breakpoint)
+        return None
+
+    # Adjacent gap — compute gap width
+    gap_delta = abs(float(phys_to_gen(n_end)) - float(phys_to_gen(n_start)))
+
+    # Look beyond the gap
+    beyond_idx = neighbor_idx + step
+    if beyond_idx < 0 or beyond_idx >= len(segs):
+        # Gap at chromosome boundary — Case G-D
+        return (gap_delta, [])
+
+    beyond = segs[beyond_idx]
+    b_start, b_end, b_anc = beyond
+
+    if _is_gap(b_anc) or b_anc != anc:
+        # Different ancestry beyond gap (or another gap) — Case G-D
+        return (gap_delta, [])
+
+    # Same ancestry beyond gap — Case G-S, build chain
+    chain = []
+    current_idx = beyond_idx
+    depth = 0
+    while depth < max_chain_depth:
+        depth += 1
+        seg_s, seg_e, seg_a = segs[current_idx]
+        seg_width = abs(float(phys_to_gen(seg_e)) - float(phys_to_gen(seg_s)))
+
+        next_idx = current_idx + step
+        if next_idx < 0 or next_idx >= len(segs):
+            # Chromosome boundary — terminal
+            chain.append((seg_width, None))
+            break
+
+        next_seg = segs[next_idx]
+        nx_start, nx_end, nx_anc = next_seg
+
+        if not _is_gap(nx_anc):
+            # Known ancestry — true breakpoint, terminal
+            chain.append((seg_width, None))
+            break
+
+        # Another gap
+        next_gap_delta = abs(float(phys_to_gen(nx_end)) - float(phys_to_gen(nx_start)))
+
+        further_idx = next_idx + step
+        if further_idx < 0 or further_idx >= len(segs):
+            # Gap at chromosome boundary — terminal
+            chain.append((seg_width, None))
+            break
+
+        further = segs[further_idx]
+        f_start, f_end, f_anc = further
+
+        if _is_gap(f_anc) or f_anc != anc:
+            # Different ancestry beyond this gap — terminal
+            chain.append((seg_width, None))
+            break
+
+        # Same ancestry beyond this gap — continue chain
+        chain.append((seg_width, next_gap_delta))
+        current_idx = further_idx
+
+    if depth >= max_chain_depth:
+        raise ValueError(
+            f"Gap chain depth exceeded {max_chain_depth} at segment index "
+            f"{seg_idx}. This suggests pathological input data with an "
+            f"extremely long chain of same-ancestry segments separated by "
+            f"gaps. Check your segment data or increase max_chain_depth."
+        )
+
+    return (gap_delta, chain)
+
+
+def _effective_pvalue(d1, context, lam):
+    """
+    Compute gap-aware p-value for one side of a segment.
+
+    Parameters
+    ----------
+    d1 : float or ndarray
+        Genetic distance from eval position(s) to the near segment boundary.
+    context : None or (gap_delta, chain)
+        None for true breakpoints; otherwise output of _build_side_context.
+    lam : float
+        Rate parameter λ = f·t.
+
+    Returns
+    -------
+    float or ndarray — p-value(s).
+    """
+    if context is None:
+        return np.exp(-lam * d1)
+
+    gap_delta, chain = context
+
+    if not chain:
+        # Case G-D: gap with different ancestry (or chrom boundary) beyond
+        return np.exp(-lam * d1)
+
+    # Case G-S: compute recursion from terminal inward
+    # Terminal segment
+    S = np.exp(-lam * chain[-1][0])
+
+    # Work inward through the chain (skip the last which is terminal)
+    for w_i, delta_i in reversed(chain[:-1]):
+        bridge = np.exp(-lam * delta_i)
+        S = np.exp(-lam * w_i) * ((1.0 - bridge) + bridge * S)
+
+    # Apply the first gap
+    bridge_first = np.exp(-lam * gap_delta)
+    return np.exp(-lam * d1) * ((1.0 - bridge_first) + bridge_first * S)
+
+
+# ── Segment normalization ────────────────────────────────────────────────────
+
+def _normalize_segments(segments):
+    """Convert segments from DataFrame or list-of-lists to canonical form."""
+    if isinstance(segments, pd.DataFrame):
+        required = {'chrom', 'start', 'end', 'ancestry'}
+        if not required.issubset(segments.columns):
+            raise ValueError(f"DataFrame must have columns {required}, got {set(segments.columns)}")
+        result = []
+        for _, grp in segments.sort_values(['chrom', 'start']).groupby('chrom', sort=True):
+            result.append(list(zip(grp['start'], grp['end'], grp['ancestry'])))
+        return result
+    return segments
 
 
 # ── P-value matrix ───────────────────────────────────────────────────────────
@@ -57,6 +253,7 @@ def build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate):
         'bp_right': ndarray (n_pos, n_chrom) — right breakpoint position (for k_eff)
     NaN where ancestry is absent.
     """
+    segments = _normalize_segments(segments)
     eval_positions = np.asarray(eval_positions, dtype=float)
     n_pos = len(eval_positions)
     n_chrom = len(segments)
@@ -72,30 +269,93 @@ def build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate):
         for a in labels
     }
 
-    for ci, ch in enumerate(segments):
-        for (start, end, anc) in ch:
-            if anc not in ancestry_rate:
+    for ci, ch_raw in enumerate(segments):
+        ch = _fill_implicit_gaps(ch_raw)
+        for si, (start, end, anc) in enumerate(ch):
+            if _is_gap(anc) or anc not in ancestry_rate:
                 continue
             lam = ancestry_rate[anc]
             mask = (eval_positions >= start) & (eval_positions < end)
+            if not np.any(mask):
+                continue
             positions = eval_positions[mask]
             g_start = float(phys_to_gen(start))
             g_end = float(phys_to_gen(end))
             g_positions = np.asarray(phys_to_gen(positions), dtype=float)
             g_l = g_positions - g_start
             g_r = g_end - g_positions
-            p_l, p_r = segment_pvalue(g_l, g_r, lam)
+
+            # Build gap context for each side
+            left_ctx = _build_side_context(ch, si, 'left', anc, phys_to_gen)
+            right_ctx = _build_side_context(ch, si, 'right', anc, phys_to_gen)
+
+            p_l = _effective_pvalue(g_l, left_ctx, lam)
+            p_r = _effective_pvalue(g_r, right_ctx, lam)
+
+            # Breakpoint identity for k_eff: use near gap edge when gap-adjacent
+            bp_left_id = start
+            bp_right_id = end
+
             pval_matrix[anc]['p_left'][mask, ci] = p_l
             pval_matrix[anc]['p_right'][mask, ci] = p_r
-            pval_matrix[anc]['bp_left'][mask, ci] = start
-            pval_matrix[anc]['bp_right'][mask, ci] = end
+            pval_matrix[anc]['bp_left'][mask, ci] = bp_left_id
+            pval_matrix[anc]['bp_right'][mask, ci] = bp_right_id
 
     return pval_matrix
 
 
+# ── Fuzzy breakpoint clustering ───────────────────────────────────────────────
+
+def _cluster_1d(values, tol):
+    """Cluster sorted 1-d values: consecutive entries within `tol` are merged."""
+    if tol == 0:
+        uniq, idx = np.unique(values, return_index=True)
+        return len(uniq), idx
+    order = np.argsort(values)
+    sorted_vals = values[order]
+    n_clusters = 1
+    cluster_start_idx = 0
+    rep_indices = [order[0]]
+    for i in range(1, len(sorted_vals)):
+        if sorted_vals[i] - sorted_vals[cluster_start_idx] > tol:
+            n_clusters += 1
+            cluster_start_idx = i
+            rep_indices.append(order[i])
+    return n_clusters, np.array(rep_indices)
+
+
+def _cluster_pairs(left_vals, right_vals, tol):
+    """Count unique (left, right) breakpoint pairs under fuzzy matching."""
+    if tol == 0:
+        pairs = np.column_stack([left_vals, right_vals])
+        return len(np.unique(pairs, axis=0))
+    _, _, labels_l = _cluster_1d_labels(left_vals, tol)
+    _, _, labels_r = _cluster_1d_labels(right_vals, tol)
+    pairs = np.column_stack([labels_l, labels_r])
+    return len(np.unique(pairs, axis=0))
+
+
+def _cluster_1d_labels(values, tol):
+    """Like _cluster_1d but also returns per-element cluster labels."""
+    order = np.argsort(values)
+    sorted_vals = values[order]
+    labels = np.empty(len(values), dtype=int)
+    cluster_id = 0
+    cluster_start_idx = 0
+    rep_indices = [order[0]]
+    labels[order[0]] = 0
+    for i in range(1, len(sorted_vals)):
+        if sorted_vals[i] - sorted_vals[cluster_start_idx] > tol:
+            cluster_id += 1
+            cluster_start_idx = i
+            rep_indices.append(order[i])
+        labels[order[i]] = cluster_id
+    return cluster_id + 1, np.array(rep_indices), labels
+
+
 # ── Combining p-values across chromosomes ────────────────────────────────────
 
-def min_p(pval_dict):
+def min_p(pval_dict, fuzzy_coord=0):
     """
     Min-p across chromosomes with Beta(1,k) correction.
 
@@ -105,6 +365,8 @@ def min_p(pval_dict):
     Parameters
     ----------
     pval_dict : dict with 'p_left', 'p_right', 'bp_left', 'bp_right' arrays.
+    fuzzy_coord : float
+        Maximum distance (bp) within which breakpoints are treated as shared.
 
     Returns
     -------
@@ -123,14 +385,14 @@ def min_p(pval_dict):
         mask = ~np.isnan(row)
         valid = row[mask]
         if len(valid) > 0:
-            pairs = np.column_stack([pval_dict['bp_left'][xi, mask],
-                                     pval_dict['bp_right'][xi, mask]])
-            k = len(np.unique(pairs, axis=0))
+            k = _cluster_pairs(pval_dict['bp_left'][xi, mask],
+                               pval_dict['bp_right'][xi, mask],
+                               fuzzy_coord)
             result[xi] = 1.0 - (1.0 - np.min(valid))**k
     return result
 
 
-def fisher_combined(pval_dict):
+def fisher_combined(pval_dict, fuzzy_coord=0):
     """
     Fisher combined test using per-side effective sample sizes.
 
@@ -142,6 +404,8 @@ def fisher_combined(pval_dict):
     Parameters
     ----------
     pval_dict : dict with 'p_left', 'p_right', 'bp_left', 'bp_right' arrays.
+    fuzzy_coord : float
+        Maximum distance (bp) within which breakpoints are treated as shared.
 
     Returns
     -------
@@ -159,14 +423,12 @@ def fisher_combined(pval_dict):
         if not np.any(mask):
             continue
         # Unique left breakpoints → unique left p-values
-        _, idx_l = np.unique(bp_l[mask], return_index=True)
+        k_l, idx_l = _cluster_1d(bp_l[mask], fuzzy_coord)
         unique_pl = pl[mask][idx_l]
-        k_l = len(unique_pl)
         stat_l = -2 * np.sum(np.log(np.maximum(unique_pl, eps)))
         # Unique right breakpoints → unique right p-values
-        _, idx_r = np.unique(bp_r[mask], return_index=True)
+        k_r, idx_r = _cluster_1d(bp_r[mask], fuzzy_coord)
         unique_pr = pr[mask][idx_r]
-        k_r = len(unique_pr)
         stat_r = -2 * np.sum(np.log(np.maximum(unique_pr, eps)))
 
         result[xi] = chi2.sf(stat_l + stat_r, df=2 * k_l + 2 * k_r)
@@ -231,7 +493,7 @@ def bh_correction(pvals):
 
 # ── High-level entry point ───────────────────────────────────────────────────
 
-def test_segments(segments, eval_positions, phys_to_gen, ancestry_rate, alpha=0.05):
+def test_segments(segments, eval_positions, phys_to_gen, ancestry_rate, alpha=0.05, fuzzy_coord=0):
     """
     Run the full significance testing pipeline.
 
@@ -242,6 +504,7 @@ def test_segments(segments, eval_positions, phys_to_gen, ancestry_rate, alpha=0.
     phys_to_gen : callable, bp -> Morgans.
     ancestry_rate : dict[str, float], ancestry label -> rate lambda.
     alpha : float, significance level.
+    fuzzy_coord : float, max bp distance for treating breakpoints as shared.
 
     Returns
     -------
@@ -250,17 +513,18 @@ def test_segments(segments, eval_positions, phys_to_gen, ancestry_rate, alpha=0.
         fisher_combined, fisher_combined_bh,
         fisher_joint, fisher_joint_bh
     """
+    segments = _normalize_segments(segments)
     eval_positions = np.asarray(eval_positions, dtype=float)
     n_eval = len(eval_positions)
     labels = sorted(ancestry_rate.keys())
 
     pm = build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate)
 
-    mp = {a: min_p(pm[a]) for a in labels}
+    mp = {a: min_p(pm[a], fuzzy_coord) for a in labels}
     mp_bonf = {a: np.minimum(1.0, mp[a] * n_eval) for a in labels}
     mp_bh = {a: bh_correction(mp[a]) for a in labels}
 
-    fc = {a: fisher_combined(pm[a]) for a in labels}
+    fc = {a: fisher_combined(pm[a], fuzzy_coord) for a in labels}
     fc_bh = {a: bh_correction(fc[a]) for a in labels}
 
     fj = None
@@ -297,7 +561,7 @@ def make_phys_to_gen(physical_map, genetic_map):
 
 # ── Simulation under the null ────────────────────────────────────────────────
 
-def simulate_chromosome(chrom_len, gen_to_phys, phys_to_gen, ancestry_rate, rng):
+def simulate_chromosome(chrom_len, gen_to_phys, phys_to_gen, ancestry_rate, rng, chrom_id=0):
     """
     Simulate a single chromosome as alternating ancestry segments.
 
@@ -316,10 +580,12 @@ def simulate_chromosome(chrom_len, gen_to_phys, phys_to_gen, ancestry_rate, rng)
     ancestry_rate : dict[str, float]
         Ancestry label -> rate lambda.
     rng : numpy Generator
+    chrom_id : int or str
+        Label for the chromosome (stored in the 'chrom' column).
 
     Returns
     -------
-    list of (start_bp, end_bp, ancestry_label) tuples covering [0, chrom_len].
+    pd.DataFrame with columns ['chrom', 'start', 'end', 'ancestry'].
     """
     labels = sorted(ancestry_rate.keys())
     gen_total = float(phys_to_gen(chrom_len))
@@ -344,13 +610,19 @@ def simulate_chromosome(chrom_len, gen_to_phys, phys_to_gen, ancestry_rate, rng)
         s, e, a = segs[-1]
         segs[-1] = (s, chrom_len, a)
 
-    return segs
+    return pd.DataFrame(segs, columns=['start', 'end', 'ancestry']).assign(chrom=chrom_id)
 
 
 def inject_segment(segs, s0, e0, ancestry):
     """Replace all segments in [s0, e0) with a single segment of given ancestry."""
+    is_df = isinstance(segs, pd.DataFrame)
+    if is_df:
+        chrom_val = segs['chrom'].iloc[0]
+        tuples = list(zip(segs['start'], segs['end'], segs['ancestry']))
+    else:
+        tuples = segs
     new = []
-    for (s, e, a) in segs:
+    for (s, e, a) in tuples:
         if e <= s0 or s >= e0:
             new.append((s, e, a))
         else:
@@ -360,4 +632,6 @@ def inject_segment(segs, s0, e0, ancestry):
                 new.append((e0, e, a))
     new.append((s0, e0, ancestry))
     new.sort()
+    if is_df:
+        return pd.DataFrame(new, columns=['start', 'end', 'ancestry']).assign(chrom=chrom_val)
     return new
