@@ -38,6 +38,8 @@ def _is_gap(anc):
     """True if ancestry represents missing data (gap)."""
     if anc is None or anc is False or anc == '':
         return True
+    if isinstance(anc, str) and anc.upper() == 'NA':
+        return True
     try:
         if isinstance(anc, float) and np.isnan(anc):
             return True
@@ -108,14 +110,14 @@ def _build_side_context(segs, seg_idx, direction, anc, phys_to_gen, max_chain_de
     beyond_idx = neighbor_idx + step
     if beyond_idx < 0 or beyond_idx >= len(segs):
         # Gap at chromosome boundary — Case G-D
-        return (gap_delta, [])
+        return (gap_delta, [], None)
 
     beyond = segs[beyond_idx]
     b_start, b_end, b_anc = beyond
 
     if _is_gap(b_anc) or b_anc != anc:
         # Different ancestry beyond gap (or another gap) — Case G-D
-        return (gap_delta, [])
+        return (gap_delta, [], None)
 
     # Same ancestry beyond gap — Case G-S, build chain
     chain = []
@@ -169,10 +171,12 @@ def _build_side_context(segs, seg_idx, direction, anc, phys_to_gen, max_chain_de
             f"gaps. Check your segment data or increase max_chain_depth."
         )
 
-    return (gap_delta, chain)
+    terminal_bp = segs[current_idx][0] if direction == 'left' else segs[current_idx][1]
+    return (gap_delta, chain, terminal_bp)
 
 
-def _effective_pvalue(d1, context, lam):
+
+def _effective_pvalue(d1, context, lam, pi_focal=None, t_total=None):
     """
     Compute gap-aware p-value for one side of a segment.
 
@@ -180,10 +184,15 @@ def _effective_pvalue(d1, context, lam):
     ----------
     d1 : float or ndarray
         Genetic distance from eval position(s) to the near segment boundary.
-    context : None or (gap_delta, chain)
+    context : None or (gap_delta, chain, terminal_bp)
         None for true breakpoints; otherwise output of _build_side_context.
     lam : float
-        Rate parameter λ = f·t.
+        Rate parameter λ for the focal ancestry.
+    pi_focal : float, optional
+        Stationary probability of the focal ancestry (= lam_other / t_total).
+        Required for Case G-S.
+    t_total : float, optional
+        Total transition rate (lam + lam_other). Required for Case G-S.
 
     Returns
     -------
@@ -192,24 +201,35 @@ def _effective_pvalue(d1, context, lam):
     if context is None:
         return np.exp(-lam * d1)
 
-    gap_delta, chain = context
+    gap_delta, chain, _terminal_bp = context
 
     if not chain:
-        # Case G-D: gap with different ancestry (or chrom boundary) beyond
-        return np.exp(-lam * d1)
+        # Case G-D: breakpoint known to be in gap, uniform average
+        mu = lam * gap_delta
+        if mu < 1e-12:
+            return np.exp(-lam * d1)
+        p_end = 1.0 - np.exp(-mu)
+        return np.exp(-lam * d1) * p_end / mu
 
-    # Case G-S: compute recursion from terminal inward
-    # Terminal segment
-    S = np.exp(-lam * chain[-1][0])
+    # Case G-S: Bayesian gap correction
+    # Build (gap_width, segment_width) pairs
+    pairs = [(gap_delta, chain[0][0])]
+    for i in range(len(chain) - 1):
+        pairs.append((chain[i][1], chain[i + 1][0]))
 
-    # Work inward through the chain (skip the last which is terminal)
-    for w_i, delta_i in reversed(chain[:-1]):
-        bridge = np.exp(-lam * delta_i)
-        S = np.exp(-lam * w_i) * ((1.0 - bridge) + bridge * S)
+    # Process right-to-left: G is the gap-corrected factor beyond d1
+    G = None
+    for delta, w in reversed(pairs):
+        q = pi_focal + (1.0 - pi_focal) * np.exp(-t_total * delta)
+        p_spans = np.exp(-lam * delta) / q
+        # Marginalized survival when breakpoint is in gap
+        M = (1.0 + np.exp(-lam * delta)) / 2.0
+        if G is None:
+            G = p_spans * np.exp(-lam * (delta + w)) + (1.0 - p_spans) * M
+        else:
+            G = p_spans * np.exp(-lam * (delta + w)) * G + (1.0 - p_spans) * M
 
-    # Apply the first gap
-    bridge_first = np.exp(-lam * gap_delta)
-    return np.exp(-lam * d1) * ((1.0 - bridge_first) + bridge_first * S)
+    return np.exp(-lam * d1) * G
 
 
 # ── Segment normalization ────────────────────────────────────────────────────
@@ -275,6 +295,9 @@ def build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate):
             if _is_gap(anc) or anc not in ancestry_rate:
                 continue
             lam = ancestry_rate[anc]
+            lam_other = sum(v for k, v in ancestry_rate.items() if k != anc)
+            t_total = lam + lam_other
+            pi_focal = lam_other / t_total if t_total > 0 else 0.5
             mask = (eval_positions >= start) & (eval_positions < end)
             if not np.any(mask):
                 continue
@@ -289,12 +312,19 @@ def build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate):
             left_ctx = _build_side_context(ch, si, 'left', anc, phys_to_gen)
             right_ctx = _build_side_context(ch, si, 'right', anc, phys_to_gen)
 
-            p_l = _effective_pvalue(g_l, left_ctx, lam)
-            p_r = _effective_pvalue(g_r, right_ctx, lam)
+            p_l = _effective_pvalue(g_l, left_ctx, lam, pi_focal, t_total)
+            p_r = _effective_pvalue(g_r, right_ctx, lam, pi_focal, t_total)
 
-            # Breakpoint identity for k_eff: use near gap edge when gap-adjacent
-            bp_left_id = start
-            bp_right_id = end
+            # Breakpoint identity for k_eff: use terminal breakpoint for gap-spanning
+            if left_ctx is not None and left_ctx[1] and left_ctx[2] is not None:
+                bp_left_id = left_ctx[2]
+            else:
+                bp_left_id = start
+
+            if right_ctx is not None and right_ctx[1] and right_ctx[2] is not None:
+                bp_right_id = right_ctx[2]
+            else:
+                bp_right_id = end
 
             pval_matrix[anc]['p_left'][mask, ci] = p_l
             pval_matrix[anc]['p_right'][mask, ci] = p_r
@@ -611,6 +641,117 @@ def simulate_chromosome(chrom_len, gen_to_phys, phys_to_gen, ancestry_rate, rng,
         segs[-1] = (s, chrom_len, a)
 
     return pd.DataFrame(segs, columns=['start', 'end', 'ancestry']).assign(chrom=chrom_id)
+
+
+def _recombine(chrom1, chrom2, crossover_gen):
+    """Recombine two segment lists at a crossover point in genetic space.
+
+    Takes segments from chrom1 up to crossover_gen and from chrom2 from
+    crossover_gen onward. Merges adjacent same-ancestry segments.
+
+    Parameters
+    ----------
+    chrom1, chrom2 : list of (gen_start, gen_end, ancestry)
+    crossover_gen : float
+
+    Returns
+    -------
+    list of (gen_start, gen_end, ancestry)
+    """
+    result = []
+
+    # Left portion from chrom1
+    for gs, ge, anc in chrom1:
+        if ge <= crossover_gen:
+            result.append((gs, ge, anc))
+        elif gs < crossover_gen:
+            result.append((gs, crossover_gen, anc))
+            break
+        else:
+            break
+
+    # Right portion from chrom2
+    for gs, ge, anc in chrom2:
+        if gs >= crossover_gen:
+            result.append((gs, ge, anc))
+        elif ge > crossover_gen:
+            result.append((crossover_gen, ge, anc))
+
+    # Merge adjacent segments with the same ancestry
+    merged = [result[0]]
+    for gs, ge, anc in result[1:]:
+        if anc == merged[-1][2]:
+            merged[-1] = (merged[-1][0], ge, anc)
+        else:
+            merged.append((gs, ge, anc))
+
+    return merged
+
+
+def simulate_population(chrom_len, gen_to_phys, phys_to_gen, f_resident,
+                        n_pop, t, n_samples, rng):
+    """Wright-Fisher forward simulation of local ancestry.
+
+    Parameters
+    ----------
+    chrom_len : int
+        Chromosome length in bp.
+    gen_to_phys : callable
+        Genetic (Morgans) -> physical (bp).
+    phys_to_gen : callable
+        Physical (bp) -> genetic (Morgans).
+    f_resident : float
+        Initial frequency of resident ancestry (e.g., 0.7).
+    n_pop : int
+        Effective population size (e.g., 10000).
+    t : int
+        Number of generations to simulate.
+    n_samples : int
+        Number of chromosomes to sample from the final population.
+    rng : numpy Generator
+
+    Returns
+    -------
+    pd.DataFrame with columns ['chrom', 'start', 'end', 'ancestry'].
+        One set of rows per sampled chromosome (chrom=0..n_samples-1).
+    """
+    gen_total = float(phys_to_gen(chrom_len))
+
+    # Initialize population: each chromosome is a single-segment list
+    n_resident = int(round(f_resident * n_pop))
+    population = []
+    for _ in range(n_resident):
+        population.append([(0.0, gen_total, "resident")])
+    for _ in range(n_pop - n_resident):
+        population.append([(0.0, gen_total, "foreign")])
+
+    # Forward simulation
+    for _ in range(t):
+        # Sample parent pairs and recombine
+        parents = rng.integers(0, len(population), size=(n_pop, 2))
+        crossovers = rng.uniform(0, gen_total, size=n_pop)
+        new_pop = []
+        for i in range(n_pop):
+            p1, p2 = parents[i]
+            # Randomly orient which parent contributes the left portion
+            if rng.random() < 0.5:
+                child = _recombine(population[p1], population[p2], crossovers[i])
+            else:
+                child = _recombine(population[p2], population[p1], crossovers[i])
+            new_pop.append(child)
+        population = new_pop
+
+    # Sample chromosomes from the final population
+    sample_idx = rng.choice(len(population), size=n_samples, replace=False)
+    rows = []
+    for chrom_id, idx in enumerate(sample_idx):
+        for gs, ge, anc in population[idx]:
+            phys_start = max(0, int(round(float(gen_to_phys(gs)))))
+            phys_end = min(chrom_len, int(round(float(gen_to_phys(ge)))))
+            if phys_end > phys_start:
+                rows.append((chrom_id, phys_start, phys_end, anc))
+
+    return pd.DataFrame(rows, columns=['chrom', 'start', 'end', 'ancestry'])
 
 
 def inject_segment(segs, s0, e0, ancestry):
