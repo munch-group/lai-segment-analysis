@@ -8,8 +8,94 @@ chromosomes, and multiple testing.
 
 import numpy as np
 import pandas as pd
+import bitarray
 from scipy.stats import chi2
+from scipy.special import hyp1f1
 from scipy.interpolate import interp1d
+from math import lgamma, exp as _exp
+
+
+# ── Coalescent effective sample size ─────────────────────────────────────────
+
+def coalescent_k_eff(k, t_gen, n_pop):
+    """
+    Expected number of distinct ancestral lineages for k sampled gene copies
+    after t_gen generations in a diploid population of n_pop individuals.
+
+    Uses the spectral decomposition of the Kingman coalescent (Tavaré, 1984):
+
+        E[A_k(τ)] = Σ_{m=1}^{k} (2m-1) · k!·(k-1)! / ((k-m)!·(k+m-1)!) · exp(-C(m,2)·τ)
+
+    where τ = t_gen / (2·n_pop) is coalescent time.
+
+    Parameters
+    ----------
+    k : int or ndarray
+        Number of sampled lineages (chromosomes carrying the focal ancestry).
+    t_gen : float
+        Generations since admixture.
+    n_pop : int
+        Diploid effective population size.
+
+    Returns
+    -------
+    float or ndarray
+        Expected number of distinct ancestral lineages, in [1, k].
+    """
+    k = np.asarray(k, dtype=float)
+    scalar = k.ndim == 0
+    k = np.atleast_1d(k)
+    tau = t_gen / (2.0 * n_pop)
+
+    result = np.ones_like(k, dtype=float)
+    for ki_idx in range(len(k)):
+        ki = int(k[ki_idx])
+        if ki <= 1:
+            result[ki_idx] = max(ki, 0.0)
+            continue
+        s = 0.0
+        log_k_fact = lgamma(ki + 1)
+        log_km1_fact = lgamma(ki)
+        for m in range(1, ki + 1):
+            log_w = (np.log(2 * m - 1) + log_k_fact + log_km1_fact
+                     - lgamma(ki - m + 1) - lgamma(ki + m))
+            coal_rate = m * (m - 1) / 2.0
+            s += _exp(log_w - coal_rate * tau)
+        result[ki_idx] = s
+
+    if scalar:
+        return result[0]
+    return result
+
+
+def drift_prior(f0, t_gen, n_pop):
+    """
+    Compute Beta prior parameters informed by Wright-Fisher drift.
+
+    Under WF diffusion, the frequency f(x) at a single locus after t
+    generations of drift from initial frequency f0 has approximately:
+        E[f] = f0,  Var[f] ≈ f0(1-f0)(1 - exp(-t/(2N)))
+
+    Matching to a Beta(α₀, β₀) distribution gives α₀ = f0·c, β₀ = (1-f0)·c,
+    where c = 1/(1 - exp(-t/(2N))) - 1.
+
+    Parameters
+    ----------
+    f0 : float
+        Initial admixture frequency of the focal ancestry.
+    t_gen : float
+        Generations since admixture.
+    n_pop : int
+        Diploid effective population size.
+
+    Returns
+    -------
+    alpha0, beta0 : float
+        Beta prior parameters for the focal ancestry.
+    """
+    tau = t_gen / (2.0 * n_pop)
+    c = 1.0 / (1.0 - np.exp(-tau)) - 1.0
+    return f0 * c, (1.0 - f0) * c
 
 
 # ── Single-segment p-value ───────────────────────────────────────────────────
@@ -30,6 +116,45 @@ def segment_pvalue(genetic_length_left, genetic_length_right, rate):
     g_l = np.asarray(genetic_length_left, dtype=float)
     g_r = np.asarray(genetic_length_right, dtype=float)
     return np.exp(-rate * g_l), np.exp(-rate * g_r)
+
+
+def beta_survival_pvalue(genetic_length, k_focal, n_total, t,
+                          alpha_prior=1.0, beta_prior=1.0):
+    """
+    Selection-corrected Beta-integrated survival p-value for one side
+    of a segment.
+
+    We condition on the focal chromosome carrying ancestry A at position x.
+    Given k out of n chromosomes carry A, the selection-corrected posterior
+    for f(x) is Beta(k + alpha_prior + 1, n - k + beta_prior), because
+    P(f | k, focal=A) ∝ f · Bin(k|n,f) · Beta(f|α₀,β₀)
+                       ∝ f^{k+α₀} (1-f)^{n-k+β₀-1}.
+
+    The marginal survival probability is then:
+        exp(-t·g) · ₁F₁(k + α₀ + 1, n + α₀ + β₀ + 1, t·g)
+
+    Parameters
+    ----------
+    genetic_length : float or ndarray
+        Genetic distance (Morgans) from eval position to breakpoint.
+    k_focal : int or ndarray
+        Number of sampled chromosomes carrying the focal ancestry at position x.
+    n_total : int
+        Total number of sampled chromosomes at position x.
+    t : float
+        Generations since admixture.
+    alpha_prior, beta_prior : float
+        Beta prior parameters (default 1.0, 1.0 = flat/uniform prior).
+
+    Returns
+    -------
+    float or ndarray -- p-value(s), clipped to [0, 1].
+    """
+    g = np.asarray(genetic_length, dtype=float)
+    z = t * g
+    a = np.asarray(k_focal, dtype=float) + alpha_prior + 1  # +1 selection correction
+    b = np.asarray(n_total, dtype=float) + alpha_prior + beta_prior + 1
+    return np.clip(np.exp(-z) * hyp1f1(a, b, z), 0.0, 1.0)
 
 
 # ── Gap detection ───────────────────────────────────────────────────────────
@@ -232,6 +357,53 @@ def _effective_pvalue(d1, context, lam, pi_focal=None, t_total=None):
     return np.exp(-lam * d1) * G
 
 
+def _effective_pvalue_beta(d1, context, k_focal, n_total, t,
+                            alpha_prior=1.0, beta_prior=1.0):
+    """
+    Beta-integrated gap-aware p-value for one side of a segment.
+
+    Uses full Beta integration for the base survival term and point-estimate
+    lambda for gap correction factors.
+    """
+    if context is None:
+        return beta_survival_pvalue(d1, k_focal, n_total, t, alpha_prior, beta_prior)
+
+    # Point-estimate lam from selection-corrected Beta posterior mean
+    f_hat = (np.asarray(k_focal, dtype=float) + alpha_prior + 1) / (n_total + alpha_prior + beta_prior + 1)
+    lam = (1.0 - f_hat) * t
+
+    gap_delta, chain, _terminal_bp = context
+
+    if not chain:
+        # Case G-D: breakpoint known to be in gap, uniform average over gap position
+        mu = lam * gap_delta
+        safe_mu = np.where(np.abs(mu) < 1e-12, 1.0, mu)
+        p_end = 1.0 - np.exp(-mu)
+        correction = np.where(np.abs(mu) < 1e-12, 1.0, p_end / safe_mu)
+        return beta_survival_pvalue(d1, k_focal, n_total, t, alpha_prior, beta_prior) * correction
+
+    # Case G-S: Bayesian gap correction using point-estimate lam
+    lam_other = f_hat * t
+    t_total = lam + lam_other       # = t (always, since f_hat + (1-f_hat) = 1)
+    pi_focal = np.where(t_total > 0, lam_other / t_total, 0.5)
+
+    pairs = [(gap_delta, chain[0][0])]
+    for i in range(len(chain) - 1):
+        pairs.append((chain[i][1], chain[i + 1][0]))
+
+    G = None
+    for delta, w in reversed(pairs):
+        q = pi_focal + (1.0 - pi_focal) * np.exp(-t_total * delta)
+        p_spans = np.exp(-lam * delta) / q
+        M = (1.0 + np.exp(-lam * delta)) / 2.0
+        if G is None:
+            G = p_spans * np.exp(-lam * (delta + w)) + (1.0 - p_spans) * M
+        else:
+            G = p_spans * np.exp(-lam * (delta + w)) * G + (1.0 - p_spans) * M
+
+    return beta_survival_pvalue(d1, k_focal, n_total, t, alpha_prior, beta_prior) * G
+
+
 # ── Segment normalization ────────────────────────────────────────────────────
 
 def _normalize_segments(segments):
@@ -249,7 +421,9 @@ def _normalize_segments(segments):
 
 # ── P-value matrix ───────────────────────────────────────────────────────────
 
-def build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate):
+def build_pvalue_matrix(segments, eval_positions, phys_to_gen,
+                         ancestry_rate=None, t=None,
+                         alpha_prior=1.0, beta_prior=1.0):
     """
     Compute per-position, per-chromosome split p-values for each ancestry label.
 
@@ -261,8 +435,14 @@ def build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate):
         Physical positions (bp) at which to evaluate.
     phys_to_gen : callable
         Physical (bp) -> genetic (Morgans).
-    ancestry_rate : dict[str, float]
-        Mapping ancestry label -> rate λ.
+    ancestry_rate : dict[str, float], optional
+        Mapping ancestry label -> rate λ. Used for fixed-rate model.
+    t : float, optional
+        Generations since admixture. When provided, uses Beta-integrated model
+        that conditions on observed local ancestry frequencies.
+    alpha_prior, beta_prior : float or dict[str, float]
+        Beta prior parameters for the Beta-integrated model (default 1.0 = flat prior).
+        If dicts, keyed by ancestry label (e.g. from drift_prior()).
 
     Returns
     -------
@@ -272,12 +452,28 @@ def build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate):
         'bp_left': ndarray (n_pos, n_chrom) — left breakpoint position (for k_eff)
         'bp_right': ndarray (n_pos, n_chrom) — right breakpoint position (for k_eff)
     NaN where ancestry is absent.
+    When t is not None, also includes 'k_counts' and 'n_chrom'.
     """
     segments = _normalize_segments(segments)
     eval_positions = np.asarray(eval_positions, dtype=float)
     n_pos = len(eval_positions)
     n_chrom = len(segments)
-    labels = sorted(ancestry_rate.keys())
+
+    use_beta = t is not None
+    if not use_beta and ancestry_rate is None:
+        raise ValueError("Must provide either ancestry_rate or t")
+
+    # Discover labels
+    if use_beta:
+        labels_set = set()
+        for ch_raw in segments:
+            ch = _fill_implicit_gaps(ch_raw)
+            for (_, _, anc) in ch:
+                if not _is_gap(anc):
+                    labels_set.add(anc)
+        labels = sorted(labels_set)
+    else:
+        labels = sorted(ancestry_rate.keys())
 
     pval_matrix = {
         a: {
@@ -289,15 +485,27 @@ def build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate):
         for a in labels
     }
 
+    # Pre-pass: count per-position ancestry frequencies (for Beta model)
+    if use_beta:
+        k_counts = {a: np.zeros(n_pos, dtype=int) for a in labels}
+        for ci, ch_raw in enumerate(segments):
+            ch = _fill_implicit_gaps(ch_raw)
+            for (start, end, anc) in ch:
+                if _is_gap(anc) or anc not in labels:
+                    continue
+                mask = (eval_positions >= start) & (eval_positions < end)
+                k_counts[anc][mask] += 1
+
     for ci, ch_raw in enumerate(segments):
         ch = _fill_implicit_gaps(ch_raw)
         for si, (start, end, anc) in enumerate(ch):
-            if _is_gap(anc) or anc not in ancestry_rate:
+            if _is_gap(anc):
                 continue
-            lam = ancestry_rate[anc]
-            lam_other = sum(v for k, v in ancestry_rate.items() if k != anc)
-            t_total = lam + lam_other
-            pi_focal = lam_other / t_total if t_total > 0 else 0.5
+            if not use_beta and anc not in ancestry_rate:
+                continue
+            if use_beta and anc not in labels:
+                continue
+
             mask = (eval_positions >= start) & (eval_positions < end)
             if not np.any(mask):
                 continue
@@ -312,8 +520,19 @@ def build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate):
             left_ctx = _build_side_context(ch, si, 'left', anc, phys_to_gen)
             right_ctx = _build_side_context(ch, si, 'right', anc, phys_to_gen)
 
-            p_l = _effective_pvalue(g_l, left_ctx, lam, pi_focal, t_total)
-            p_r = _effective_pvalue(g_r, right_ctx, lam, pi_focal, t_total)
+            if use_beta:
+                k_focal = k_counts[anc][mask]
+                ap = alpha_prior[anc] if isinstance(alpha_prior, dict) else alpha_prior
+                bp = beta_prior[anc] if isinstance(beta_prior, dict) else beta_prior
+                p_l = _effective_pvalue_beta(g_l, left_ctx, k_focal, n_chrom, t, ap, bp)
+                p_r = _effective_pvalue_beta(g_r, right_ctx, k_focal, n_chrom, t, ap, bp)
+            else:
+                lam = ancestry_rate[anc]
+                lam_other = sum(v for k, v in ancestry_rate.items() if k != anc)
+                t_total = lam + lam_other
+                pi_focal = lam_other / t_total if t_total > 0 else 0.5
+                p_l = _effective_pvalue(g_l, left_ctx, lam, pi_focal, t_total)
+                p_r = _effective_pvalue(g_r, right_ctx, lam, pi_focal, t_total)
 
             # Breakpoint identity for k_eff: use terminal breakpoint for gap-spanning
             if left_ctx is not None and left_ctx[1] and left_ctx[2] is not None:
@@ -330,6 +549,10 @@ def build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate):
             pval_matrix[anc]['p_right'][mask, ci] = p_r
             pval_matrix[anc]['bp_left'][mask, ci] = bp_left_id
             pval_matrix[anc]['bp_right'][mask, ci] = bp_right_id
+
+    if use_beta:
+        pval_matrix['k_counts'] = k_counts
+        pval_matrix['n_chrom'] = n_chrom
 
     return pval_matrix
 
@@ -418,7 +641,7 @@ def min_p(pval_dict, fuzzy_coord=0):
             k = _cluster_pairs(pval_dict['bp_left'][xi, mask],
                                pval_dict['bp_right'][xi, mask],
                                fuzzy_coord)
-            result[xi] = 1.0 - (1.0 - np.min(valid))**k
+            result[xi] = -np.expm1(k * np.log1p(-np.min(valid)))
     return result
 
 
@@ -523,7 +746,10 @@ def bh_correction(pvals):
 
 # ── High-level entry point ───────────────────────────────────────────────────
 
-def test_segments(segments, eval_positions, phys_to_gen, ancestry_rate, alpha=0.05, fuzzy_coord=0):
+def test_segments(segments, eval_positions, phys_to_gen,
+                   ancestry_rate=None, t=None, n_pop=None,
+                   alpha=0.05, fuzzy_coord=0,
+                   alpha_prior=1.0, beta_prior=1.0):
     """
     Run the full significance testing pipeline.
 
@@ -532,9 +758,15 @@ def test_segments(segments, eval_positions, phys_to_gen, ancestry_rate, alpha=0.
     segments : list[list[(start_bp, end_bp, ancestry_label)]]
     eval_positions : 1-d array of physical positions (bp).
     phys_to_gen : callable, bp -> Morgans.
-    ancestry_rate : dict[str, float], ancestry label -> rate lambda.
+    ancestry_rate : dict[str, float], optional. Ancestry label -> rate lambda.
+    t : float, optional. Generations since admixture (enables Beta-integrated model).
+    n_pop : int, optional. Diploid effective population size. When provided
+        together with t, uses a drift-informed Beta prior instead of flat,
+        and applies coalescent correction for genealogical correlation.
     alpha : float, significance level.
     fuzzy_coord : float, max bp distance for treating breakpoints as shared.
+    alpha_prior, beta_prior : float, Beta prior parameters for Beta-integrated
+        model. Ignored when n_pop is provided (drift prior is used instead).
 
     Returns
     -------
@@ -543,12 +775,42 @@ def test_segments(segments, eval_positions, phys_to_gen, ancestry_rate, alpha=0.
         fisher_combined, fisher_combined_bh,
         fisher_joint, fisher_joint_bh
     """
+    if ancestry_rate is None and t is None:
+        raise ValueError("Must provide either ancestry_rate or t")
+
     segments = _normalize_segments(segments)
     eval_positions = np.asarray(eval_positions, dtype=float)
     n_eval = len(eval_positions)
-    labels = sorted(ancestry_rate.keys())
 
-    pm = build_pvalue_matrix(segments, eval_positions, phys_to_gen, ancestry_rate)
+    # Discover labels and estimate per-ancestry frequencies
+    if t is not None:
+        labels_set = set()
+        seg_bp_total = {}
+        total_bp = 0
+        for ch_raw in segments:
+            ch = _fill_implicit_gaps(ch_raw)
+            for (start, end, anc) in ch:
+                if not _is_gap(anc):
+                    labels_set.add(anc)
+                    seg_bp_total[anc] = seg_bp_total.get(anc, 0) + (end - start)
+                    total_bp += (end - start)
+        labels = sorted(labels_set)
+    else:
+        labels = sorted(ancestry_rate.keys())
+
+    # Compute drift-informed priors if n_pop is provided
+    if n_pop is not None and t is not None and total_bp > 0:
+        freq_est = {a: seg_bp_total.get(a, 0) / total_bp for a in labels}
+        prior_pairs = {a: drift_prior(freq_est[a], t, n_pop) for a in labels}
+        ap_dict = {a: prior_pairs[a][0] for a in labels}
+        bp_dict = {a: prior_pairs[a][1] for a in labels}
+    else:
+        ap_dict = alpha_prior
+        bp_dict = beta_prior
+
+    pm = build_pvalue_matrix(segments, eval_positions, phys_to_gen,
+                              ancestry_rate=ancestry_rate, t=t,
+                              alpha_prior=ap_dict, beta_prior=bp_dict)
 
     mp = {a: min_p(pm[a], fuzzy_coord) for a in labels}
     mp_bonf = {a: np.minimum(1.0, mp[a] * n_eval) for a in labels}
@@ -643,54 +905,161 @@ def simulate_chromosome(chrom_len, gen_to_phys, phys_to_gen, ancestry_rate, rng,
     return pd.DataFrame(segs, columns=['start', 'end', 'ancestry']).assign(chrom=chrom_id)
 
 
-def _recombine(chrom1, chrom2, crossover_gen):
-    """Recombine two segment lists at a crossover point in genetic space.
+def simulate_population(chrom_len, gen_to_phys, phys_to_gen, f_resident,
+                        n_pop, t, n_samples, rng, window_size=100_000):
+    """Wright-Fisher forward simulation of local ancestry (bit-packed).
 
-    Takes segments from chrom1 up to crossover_gen and from chrom2 from
-    crossover_gen onward. Merges adjacent same-ancestry segments.
+    Each chromosome is stored as a bit-packed numpy row (0=resident,
+    1=foreign). Crossover positions are sampled proportional to per-window
+    genetic distance. Recombination uses precomputed bitwise masks.
 
     Parameters
     ----------
-    chrom1, chrom2 : list of (gen_start, gen_end, ancestry)
-    crossover_gen : float
+    chrom_len : int
+        Chromosome length in bp.
+    gen_to_phys : callable
+        Genetic (Morgans) -> physical (bp).
+    phys_to_gen : callable
+        Physical (bp) -> genetic (Morgans). Used to compute per-window
+        crossover weights.
+    f_resident : float
+        Initial frequency of resident ancestry (e.g., 0.7).
+    n_pop : int
+        Effective population size (e.g., 10000).
+    t : int
+        Number of generations to simulate.
+    n_samples : int
+        Number of chromosomes to sample from the final population.
+    rng : numpy Generator
+    window_size : int
+        Size of each discrete window in bp (default 100,000).
 
     Returns
     -------
-    list of (gen_start, gen_end, ancestry)
+    pd.DataFrame with columns ['chrom', 'start', 'end', 'ancestry'].
+        One set of rows per sampled chromosome (chrom=0..n_samples-1).
     """
+    n_windows = chrom_len // window_size
+    n_packed = (n_windows + 7) // 8
+
+    # Per-window genetic distance for weighted crossover sampling
+    window_edges = np.arange(0, chrom_len + 1, window_size)
+    gen_edges = np.array([float(phys_to_gen(x)) for x in window_edges])
+    gen_per_window = np.diff(gen_edges)
+    cum_weights = np.cumsum(gen_per_window)
+
+    # Precompute left-masks: mask[xo] has bits 0..xo-1 set
+    all_masks = np.zeros((n_windows, n_packed), dtype=np.uint8)
+    for xo_pos in range(n_windows):
+        ba = bitarray.bitarray(n_windows)
+        ba.setall(0)
+        ba[:xo_pos] = 1
+        all_masks[xo_pos] = np.frombuffer(ba.tobytes(), dtype=np.uint8)
+
+    # Initialize population as packed bytes: (n_pop, n_packed)
+    n_resident = int(round(f_resident * n_pop))
+    pop = np.zeros((n_pop, n_packed), dtype=np.uint8)
+    pop[n_resident:, :] = all_masks[-1]  # all-1s for foreign
+
+    # Forward simulation with Poisson(gen_total) crossovers per meiosis
+    gen_total = cum_weights[-1]
+    for _ in range(t):
+        p1 = rng.integers(0, n_pop, size=n_pop)
+        p2 = rng.integers(0, n_pop, size=n_pop)
+        n_xo = rng.poisson(gen_total, size=n_pop)
+        total_xo = n_xo.sum()
+        combined = np.zeros((n_pop, n_packed), dtype=np.uint8)
+        if total_xo > 0:
+            # Sample all crossover positions at once, convert to window indices
+            u_all = rng.uniform(0, gen_total, size=total_xo)
+            xo_all = np.searchsorted(cum_weights, u_all, side='right')
+            xo_all = np.clip(xo_all, 1, n_windows - 1)
+            # XOR masks per individual to build recombination pattern
+            offsets = np.concatenate([[0], np.cumsum(n_xo)])
+            for i in range(n_pop):
+                for j in range(offsets[i], offsets[i + 1]):
+                    combined[i] ^= all_masks[xo_all[j]]
+        pop = (pop[p1] & ~combined) | (pop[p2] & combined)
+
+    # Sample chromosomes and run-length encode to segments
+    sample_idx = rng.choice(n_pop, size=n_samples, replace=False)
+    rows = []
+    for chrom_id, idx in enumerate(sample_idx):
+        arr = np.unpackbits(pop[idx])[:n_windows]
+        changes = np.where(np.diff(arr) != 0)[0] + 1
+        starts = np.concatenate([[0], changes])
+        ends = np.concatenate([changes, [n_windows]])
+        for s, e in zip(starts, ends):
+            anc = "foreign" if arr[s] else "resident"
+            rows.append((chrom_id, s * window_size, e * window_size, anc))
+
+    return pd.DataFrame(rows, columns=['chrom', 'start', 'end', 'ancestry'])
+
+
+def _recombine(segs_a, segs_b, crossover_positions, chrom_len):
+    """Splice two parent segment lists at sorted crossover positions.
+
+    Parameters
+    ----------
+    segs_a, segs_b : list of (start, end, ancestry) tuples
+        Parent segments, sorted by start position, covering [0, chrom_len).
+    crossover_positions : array-like of int
+        Sorted crossover positions in bp (must be in (0, chrom_len)).
+    chrom_len : int
+        Chromosome length in bp.
+
+    Returns
+    -------
+    list of (start, end, ancestry) tuples
+        Child segments after recombination.
+    """
+    # Build interval boundaries: [0, xo1, xo2, ..., chrom_len]
+    boundaries = [0] + list(crossover_positions) + [chrom_len]
+    parents = [segs_a, segs_b]
+    use_a = True  # start with parent a
     result = []
+    cursor = [0, 0]  # index into each parent's segment list
 
-    # Left portion from chrom1
-    for gs, ge, anc in chrom1:
-        if ge <= crossover_gen:
-            result.append((gs, ge, anc))
-        elif gs < crossover_gen:
-            result.append((gs, crossover_gen, anc))
-            break
-        else:
-            break
+    for k in range(len(boundaries) - 1):
+        iv_start = boundaries[k]
+        iv_end = boundaries[k + 1]
+        if iv_start >= iv_end:
+            use_a = not use_a
+            continue
+        p = 0 if use_a else 1
+        segs = parents[p]
+        i = cursor[p]
+        # Advance cursor to first segment overlapping iv_start
+        while i < len(segs) and segs[i][1] <= iv_start:
+            i += 1
+        # Extract segments from this parent within [iv_start, iv_end)
+        while i < len(segs) and segs[i][0] < iv_end:
+            s, e, a = segs[i]
+            cs = max(s, iv_start)
+            ce = min(e, iv_end)
+            if cs < ce:
+                # Merge with previous if same ancestry
+                if result and result[-1][2] == a and result[-1][1] == cs:
+                    result[-1] = (result[-1][0], ce, a)
+                else:
+                    result.append((cs, ce, a))
+            if e <= iv_end:
+                i += 1
+            else:
+                break
+        cursor[p] = i
+        use_a = not use_a
 
-    # Right portion from chrom2
-    for gs, ge, anc in chrom2:
-        if gs >= crossover_gen:
-            result.append((gs, ge, anc))
-        elif ge > crossover_gen:
-            result.append((crossover_gen, ge, anc))
-
-    # Merge adjacent segments with the same ancestry
-    merged = [result[0]]
-    for gs, ge, anc in result[1:]:
-        if anc == merged[-1][2]:
-            merged[-1] = (merged[-1][0], ge, anc)
-        else:
-            merged.append((gs, ge, anc))
-
-    return merged
+    return result
 
 
-def simulate_population(chrom_len, gen_to_phys, phys_to_gen, f_resident,
-                        n_pop, t, n_samples, rng):
-    """Wright-Fisher forward simulation of local ancestry.
+def simulate_population_exact(chrom_len, gen_to_phys, phys_to_gen, f_resident,
+                              n_pop, t, n_samples, rng):
+    """Wright-Fisher forward simulation of local ancestry (exact, 1-bp resolution).
+
+    Each chromosome is stored as a list of (start, end, ancestry) tuples.
+    Crossover positions are sampled in genetic space and converted to physical
+    coordinates via gen_to_phys. No windowing or discretization.
 
     Parameters
     ----------
@@ -703,53 +1072,63 @@ def simulate_population(chrom_len, gen_to_phys, phys_to_gen, f_resident,
     f_resident : float
         Initial frequency of resident ancestry (e.g., 0.7).
     n_pop : int
-        Effective population size (e.g., 10000).
+        Effective population size.
     t : int
         Number of generations to simulate.
     n_samples : int
-        Number of chromosomes to sample from the final population.
-    rng : numpy Generator
+        Number of chromosomes to sample from the final generation.
+    rng : numpy.random.Generator
+        Random number generator.
 
     Returns
     -------
-    pd.DataFrame with columns ['chrom', 'start', 'end', 'ancestry'].
-        One set of rows per sampled chromosome (chrom=0..n_samples-1).
+    pd.DataFrame
+        Columns: chrom, start, end, ancestry.
     """
-    gen_total = float(phys_to_gen(chrom_len))
-
-    # Initialize population: each chromosome is a single-segment list
     n_resident = int(round(f_resident * n_pop))
-    population = []
+    gen_total = phys_to_gen(chrom_len)
+
+    # Initialize population
+    pop = []
     for _ in range(n_resident):
-        population.append([(0.0, gen_total, "resident")])
+        pop.append([(0, chrom_len, "resident")])
     for _ in range(n_pop - n_resident):
-        population.append([(0.0, gen_total, "foreign")])
+        pop.append([(0, chrom_len, "foreign")])
 
     # Forward simulation
     for _ in range(t):
-        # Sample parent pairs and recombine
-        parents = rng.integers(0, len(population), size=(n_pop, 2))
-        crossovers = rng.uniform(0, gen_total, size=n_pop)
+        p1 = rng.integers(0, n_pop, size=n_pop)
+        p2 = rng.integers(0, n_pop, size=n_pop)
+        n_xo = rng.poisson(gen_total, size=n_pop)
         new_pop = []
         for i in range(n_pop):
-            p1, p2 = parents[i]
-            # Randomly orient which parent contributes the left portion
-            if rng.random() < 0.5:
-                child = _recombine(population[p1], population[p2], crossovers[i])
+            if n_xo[i] == 0:
+                # No crossover: child is a copy of parent a
+                new_pop.append(list(pop[p1[i]]))
             else:
-                child = _recombine(population[p2], population[p1], crossovers[i])
-            new_pop.append(child)
-        population = new_pop
+                # Sample crossover positions in genetic space
+                xo_gen = rng.uniform(0, gen_total, size=n_xo[i])
+                # Convert to physical positions
+                xo_phys = np.round(gen_to_phys(xo_gen)).astype(int)
+                # Clip to valid range
+                xo_phys = np.clip(xo_phys, 1, chrom_len - 1)
+                # Handle duplicates: keep positions with odd occurrence count
+                vals, counts = np.unique(xo_phys, return_counts=True)
+                xo_final = vals[counts % 2 == 1]
+                if len(xo_final) == 0:
+                    new_pop.append(list(pop[p1[i]]))
+                else:
+                    child = _recombine(pop[p1[i]], pop[p2[i]], xo_final,
+                                       chrom_len)
+                    new_pop.append(child)
+        pop = new_pop
 
-    # Sample chromosomes from the final population
-    sample_idx = rng.choice(len(population), size=n_samples, replace=False)
+    # Sample chromosomes
+    sample_idx = rng.choice(n_pop, size=n_samples, replace=False)
     rows = []
     for chrom_id, idx in enumerate(sample_idx):
-        for gs, ge, anc in population[idx]:
-            phys_start = max(0, int(round(float(gen_to_phys(gs)))))
-            phys_end = min(chrom_len, int(round(float(gen_to_phys(ge)))))
-            if phys_end > phys_start:
-                rows.append((chrom_id, phys_start, phys_end, anc))
+        for s, e, a in pop[idx]:
+            rows.append((chrom_id, s, e, a))
 
     return pd.DataFrame(rows, columns=['chrom', 'start', 'end', 'ancestry'])
 
